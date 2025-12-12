@@ -284,9 +284,8 @@ ${question}
 
     const openRouter = new OpenRouter({
       apiKey:
-        process.env.OPENROUTER_API_KEY ||
-        "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",
-    });
+        process.env.OPENROUTER_API_KEY
+      });
 
     const completion = await openRouter.chat.send({
       model: "kwaipilot/kat-coder-pro:free",
