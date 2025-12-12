@@ -285,7 +285,7 @@ ${question}
     const openRouter = new OpenRouter({
       apiKey:
         process.env.OPENROUTER_API_KEY ||
-        "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",
+        "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",
     });
 
     const completion = await openRouter.chat.send({
