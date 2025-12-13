@@ -2,12 +2,14 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { QdrantClient } from "@qdrant/js-client-rest";
-import { pipeline } from "@xenova/transformers";
-import { convert } from "html-to-text"; 
-import { OpenRouter } from "@openrouter/sdk";
+// import { pipeline } from "@xenova/transformers";
+// import { convert } from "html-to-text"; 
+// import { OpenRouter } from "@openrouter/sdk";
 
 
- 
+import { chunkText } from './utils/chunk.js';
+import { embedText } from './embeddings/xenova.js';
+import { openRouterLLM } from './llms/openrouter.js'; 
 
 // register the vector type with node-postgres
  
@@ -30,38 +32,7 @@ const qdrant = new QdrantClient({
   url: QDRANT_URL,
   apiKey: QDRANT_API_KEY || undefined,
 });
-
-const EMBED_MODEL = QDRANT_EMBED_MODEL; 
-
-// ------------------------
-// XENOVA EMBEDDING MODEL
-// ------------------------
-let embedder = null;
-
-async function loadEmbedder() {
-  if (!embedder) {
-    // console.log("⏳ Loading Xenova embedding model:", EMBED_MODEL);
-    embedder = await pipeline("feature-extraction", EMBED_MODEL);
-    // console.log("✅ Xenova model loaded");
-  }
-  return embedder;
-}
-
-export async function embedText(text) {
-  if (!text || !text.trim()) {
-    throw new Error("Cannot embed empty text");
-  }
-
-  const model = await loadEmbedder();
-  const output = await model(text, {
-    pooling: "mean",
-    normalize: true,
-  });
-
-    //vector array
-    return  Array.from(output.data);  
-}
-
+ 
 // ------------------------
 // HTML → CLEAN TEXT
 // ------------------------
@@ -79,32 +50,7 @@ function cleanHTML(htmlOrText) {
   })
     .replace(/\s+/g, " ")
     .trim();
-}
-
-// ------------------------
-// SIMPLE SENTENCE CHUNKING
-// ------------------------
-function chunkText(text, maxLength = 1200) {
-  const sentences = text.split(/(?<=[.?!])\s+/);
-  const chunks = [];
-  let current = "";
-
-  for (const sentence of sentences) {
-    if (!sentence.trim()) continue;
-
-    if ((current + " " + sentence).length > maxLength) {
-      if (current.trim().length) chunks.push(current.trim());
-      current = sentence;
-    } else {
-      current += " " + sentence;
-    }
-  }
-
-  if (current.trim().length) chunks.push(current.trim());
-
-  return chunks;
-}
- 
+} 
 // ------------------------
 // EMBED DOCUMENT → QDRANT
 // ------------------------
@@ -194,50 +140,7 @@ ${m?.payload?.content ?? ""}
 // ------------------------
 async function generateAnswer(question, context) {
   try { 
-    const body = { 
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a helpful assistant for an Expodite. " +
-            "Answer only using the provided context. If the context " +
-            'does not contain the answer, say exactly: "No matching information found."',
-        },
-        {
-          role: "user",
-          content: `
-Use ONLY the following context to answer the user's question.
-If the context does not contain the answer, reply exactly:
-"No matching information found."
-
-CONTEXT:
-${context}
-
-QUESTION:
-${question}
-          `.trim(),
-        },
-      ],
-      temperature: 0.1,
-    }; 
-
-    const openRouter = new OpenRouter({
-      apiKey:
-        process.env.OPENROUTER_API_KEY
-      });
-
-    const completion = await openRouter.chat.send({
-      model: "kwaipilot/kat-coder-pro:free", 
-      messages: [
-        {
-          role: "user",
-          content: JSON.stringify(body),
-        },
-      ],
-      stream: false,
-    });
- 
-    return completion.choices[0].message.content;
+       return await openRouterLLM(question,context); 
   } catch (error) {
     console.error("❌ OPENROUTER LLM Error:", error);
     throw error;
