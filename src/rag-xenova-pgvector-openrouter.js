@@ -1,52 +1,27 @@
 import dotenv from "dotenv";
 dotenv.config();
-
-import { QdrantClient } from "@qdrant/js-client-rest";
+ 
 import { pipeline } from "@xenova/transformers";
 import { convert } from "html-to-text"; 
+import { parse } from "node-html-parser";
 import { OpenRouter } from "@openrouter/sdk";
 
-
-// import pkg from "pg";
-// import { randomUUID } from "crypto";
-// const { Client } = pkg;
-
+import * as cheerio from "cheerio";
 import { randomUUID } from "crypto";
 import { Client } from "pg";
 import { registerType } from "pgvector/pg";
+import { toSql } from "pgvector";
 
-// register the vector type with node-postgres
- 
-// ------------------------
-// ENV + QDRANT CLIENT
-// ------------------------
-const {
-  QDRANT_URL,
-  QDRANT_API_KEY,
-  QDRANT_COLLECTION,
-  QDRANT_EMBED_MODEL,  
-} = process.env;
-
-if (!QDRANT_URL) throw new Error("QDRANT_URL is not set");
-if (!QDRANT_COLLECTION) throw new Error("QDRANT_COLLECTION is not set");
-if (!QDRANT_EMBED_MODEL) throw new Error("QDRANT_EMBED_MODEL is not set"); 
- 
- 
-const qdrant = new QdrantClient({
-  url: QDRANT_URL,
-  apiKey: QDRANT_API_KEY || undefined,
-});
-
-const EMBED_MODEL = QDRANT_EMBED_MODEL; 
+const EMBED_MODEL = process.env.QDRANT_EMBED_MODEL; 
 
 const client = new Client({
   connectionString: process.env.POSTGRES_URL,
 });
 await client.connect();
 
+// register the vector type with node-postgres
 await registerType(client);
  
-
 // ------------------------
 // XENOVA EMBEDDING MODEL
 // ------------------------
@@ -79,26 +54,45 @@ export async function embedText(text) {
 // ------------------------
 // HTML → CLEAN TEXT
 // ------------------------
-function cleanHTML(htmlOrText) {
-  if (!htmlOrText) return "";
+// function cleanHTML(htmlOrText) {
+//   if (!htmlOrText) return "";
 
-  // If it's plain text, convert doesn't hurt; if HTML, we'll strip tags.
-  return convert(htmlOrText, {
-    wordwrap: false,
-    selectors: [
-      { selector: "img", format: "skip" },
-      { selector: "script", format: "skip" },
-      { selector: "style", format: "skip" },
-    ],
-  })
-    .replace(/\s+/g, " ")
-    .trim();
+//   // If it's plain text, convert doesn't hurt; if HTML, we'll strip tags.
+//   return convert(htmlOrText, {
+//     wordwrap: false,
+//     selectors: [
+//       { selector: "img", format: "skip" },
+//       { selector: "script", format: "skip" },
+//       { selector: "style", format: "skip" },
+//     ],
+//   })
+//     .replace(/\s+/g, " ")
+//     .trim();
+// }
+
+
+
+function cleanHTML(html) {
+//   const root = parse(html, {
+//     comment: false,
+//     blockTextElements: {
+//       script: false,
+//       noscript: false,
+//       style: false,
+//     },
+//   });
+
+//   return root.innerText
+//     .replace(/\s+/g, " ")
+//     .trim();
+
+    const $ = cheerio.load(html);
+    return $.text().replace(/\s+/g, " ").trim();
 }
-
 // ------------------------
 // SIMPLE SENTENCE CHUNKING
 // ------------------------
-function chunkText(text, maxLength = 1200) {
+function chunkText(text, maxLength = 2000) {
   const sentences = text.split(/(?<=[.?!])\s+/);
   const chunks = [];
   let current = "";
@@ -118,33 +112,7 @@ function chunkText(text, maxLength = 1200) {
 
   return chunks;
 }
-
-// // ------------------------
-// // ENSURE COLLECTION
-// // ------------------------
-// async function ensureCollection() {
-//   const collections = await qdrant.getCollections();
-//   const exists = collections.collections.some(
-//     (c) => c.name === QDRANT_COLLECTION
-//   );
-
-//   if (!exists) {
-//     console.log(`📦 Creating Qdrant collection "${QDRANT_COLLECTION}"...`);
-//     await qdrant.createCollection(QDRANT_COLLECTION, {
-//       vectors: {
-//         size: 384, // all-MiniLM-L6-v2 dimension; adjust if you use another model
-//         distance: "Cosine",
-//       },
-//     });
-//     console.log("✅ Collection created");
-//   }
-// }
-
-// // Call once at startup
-// ensureCollection().catch((err) => {
-//   console.error("❌ Error ensuring collection:", err);
-// });
-
+ 
 // ------------------------
 // EMBED DOCUMENT → QDRANT
 // ------------------------
@@ -166,48 +134,23 @@ export async function embedDocument({ id, text, meta = {} }) {
     const chunks = chunkText(cleaned);
     console.log(`📄 Document ${id} split into ${chunks.length} chunks`);
 
-    const points = [];
 
     for (const chunk of chunks) {
       const vector = await embedText(chunk);
-
-//     console.log("Vector type:", typeof vector);
-// console.log("Vector[0] type:", typeof vector[0]);
-// console.log("Is array:", Array.isArray(vector));
-// console.log("Sample:", vector.slice(0, 5));
-
-      points.push({
-        id: randomUUID(),
-        vector,
-        payload: {
-          doc_id: String(id),
-          content: chunk,
-          ...meta,
-        },
-      });
+     
       
-      const vectorString = `[${vector.join(",")}]`;
+    //   const vectorString = `[${vector.join(",")}]`;
+      const vectorSql = toSql(vector);
 
       await client.query(
 
       `INSERT INTO admin.documents_embeddings (id, content, embedding)
        VALUES ($1, $2, $3)`,
-      [randomUUID(),chunk, vectorString]
+      [randomUUID(),chunk, vectorSql]
       );
-    }
-
-
-    console.log(`⬆️ Uploading ${points.length} points to Qdrant…`);
-
-    await qdrant.upsert(QDRANT_COLLECTION, {
-      wait: true,
-      points,
-    });
-
-
+    } 
     console.log("✅ Qdrant upsert finished");
-
-    return { success: true, chunks: points.length };
+    return { success: true, chunks: chunks.length };
   } catch (err) {
     console.error("❌ Qdrant Embed Error:", err);
     throw err;
@@ -218,16 +161,7 @@ export async function embedDocument({ id, text, meta = {} }) {
 // SEARCH CHUNKS FROM QDRANT
 // ------------------------
 export async function queryChunks(query, topK = 5) {
-  // const vector = await embedText(query);
-
-  // const results = await qdrant.search(QDRANT_COLLECTION, {
-  //   vector,
-  //   limit: topK,
-  //   // score_threshold: 0.0, // filter out weak matches
-  // });
-
   const results = await searchPgVector(query, topK);
-  // console.log(results)
   return results;
 }
 
@@ -252,16 +186,9 @@ ${m?.content ?? ""}
 // CALL GROQ LLM
 // ------------------------
 async function generateAnswer(question, context) {
-  try {
-    const model = 'llama-3.1-8b-instant';
-
-//     if (!context || !context.trim()) {
-//       // No context at all → don't even call Groq
-//       return "No matching information found.";
-//     }
+  try { 
 
     const body = {
-      // model,
       messages: [
         {
           role: "system",
@@ -287,32 +214,6 @@ ${question}
       ],
       temperature: 0.1,
     };
-
-    // const response = await fetch(
-    //   "https://api.groq.com/openai/v1/chat/completions",
-    //   {
-    //     method: "POST",
-    //     headers: {
-    //       "Content-Type": "application/json",
-    //       Authorization: `Bearer ${GROQ_API_KEY}`,
-    //     },
-    //     body: JSON.stringify(body),
-    //   }
-    // );
-
-    // const openai = new OpenAI({
-    //   baseURL: "https://api.deepseek.com",
-    //   apiKey: "sk-8b511ee579404d59ab095b7049e41454",
-    // });
-
-    // const completion = await openai.chat.completions.create({
-    //   messages: [{ role: "system", content: body }],
-    //   model: "deepseek-chat",
-    // });
-    // console.log(completion);
-
-    console.log(body)
-
     const openRouter = new OpenRouter({
       apiKey:
         process.env.OPENROUTER_API_KEY
@@ -341,7 +242,7 @@ ${question}
 // ------------------------
 export async function askQuestion(question, topK = 5) {
   const matches = await queryChunks(question, topK);
-// console.log({matches})
+console.log({matches});
   if (!matches || matches.length === 0) {
     return {
       answer: "No matching information found.",
@@ -350,10 +251,8 @@ export async function askQuestion(question, topK = 5) {
   }
 
   const context = buildContext(matches);
-
-  // console.log({context})
+console.log({context});
   const answer = await generateAnswer(question, context);
-
   return {
     answer,
     matches,
@@ -374,7 +273,9 @@ export async function queryDocuments(query, topK = 5) {
 
 async function searchPgVector(query, topK = 5) {
   const vector = await embedText(query);
-  const vectorString = `[${vector.join(",")}]`;
+//   const vectorString = `[${vector.join(",")}]`;
+
+  const vectorSql = toSql(vector);
 
   const { rows } = await client.query(
     `
@@ -386,7 +287,7 @@ async function searchPgVector(query, topK = 5) {
     ORDER BY embedding <-> $1::vector
     LIMIT $2;
     `,
-    [vectorString, topK]
+    [vectorSql, topK]
   ); 
   return rows;
 }

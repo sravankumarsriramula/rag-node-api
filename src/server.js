@@ -3,11 +3,24 @@ import cors from "cors";
 import dotenv from "dotenv";
 dotenv.config();
 
+// import {
+//   embedDocument,
+//   queryDocuments,
+//   askQuestion,
+// } from "./rag-qdrant-xenova.js"; 
+
+// import {
+//   embedDocument,
+//   queryDocuments,
+//   askQuestion,
+// } from "./rag-xenova-qdrant-openrouter.js"; 
+
+
 import {
   embedDocument,
   queryDocuments,
   askQuestion,
-} from "./rag-qdrant-xenova.js";
+} from "./rag-xenova-pgvector-openrouter.js"; 
 
 const app = express();
 app.use(express.json({ limit: "20mb" }));

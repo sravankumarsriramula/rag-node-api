@@ -7,13 +7,7 @@ import { convert } from "html-to-text";
 import { OpenRouter } from "@openrouter/sdk";
 
 
-// import pkg from "pg";
-// import { randomUUID } from "crypto";
-// const { Client } = pkg;
-
-import { randomUUID } from "crypto";
-import { Client } from "pg";
-import { registerType } from "pgvector/pg";
+ 
 
 // register the vector type with node-postgres
  
@@ -38,14 +32,6 @@ const qdrant = new QdrantClient({
 });
 
 const EMBED_MODEL = QDRANT_EMBED_MODEL; 
-
-const client = new Client({
-  connectionString: process.env.POSTGRES_URL,
-});
-await client.connect();
-
-await registerType(client);
- 
 
 // ------------------------
 // XENOVA EMBEDDING MODEL
@@ -118,33 +104,7 @@ function chunkText(text, maxLength = 1200) {
 
   return chunks;
 }
-
-// // ------------------------
-// // ENSURE COLLECTION
-// // ------------------------
-// async function ensureCollection() {
-//   const collections = await qdrant.getCollections();
-//   const exists = collections.collections.some(
-//     (c) => c.name === QDRANT_COLLECTION
-//   );
-
-//   if (!exists) {
-//     console.log(`📦 Creating Qdrant collection "${QDRANT_COLLECTION}"...`);
-//     await qdrant.createCollection(QDRANT_COLLECTION, {
-//       vectors: {
-//         size: 384, // all-MiniLM-L6-v2 dimension; adjust if you use another model
-//         distance: "Cosine",
-//       },
-//     });
-//     console.log("✅ Collection created");
-//   }
-// }
-
-// // Call once at startup
-// ensureCollection().catch((err) => {
-//   console.error("❌ Error ensuring collection:", err);
-// });
-
+ 
 // ------------------------
 // EMBED DOCUMENT → QDRANT
 // ------------------------
@@ -170,12 +130,6 @@ export async function embedDocument({ id, text, meta = {} }) {
 
     for (const chunk of chunks) {
       const vector = await embedText(chunk);
-
-//     console.log("Vector type:", typeof vector);
-// console.log("Vector[0] type:", typeof vector[0]);
-// console.log("Is array:", Array.isArray(vector));
-// console.log("Sample:", vector.slice(0, 5));
-
       points.push({
         id: randomUUID(),
         vector,
@@ -184,18 +138,8 @@ export async function embedDocument({ id, text, meta = {} }) {
           content: chunk,
           ...meta,
         },
-      });
-      
-      const vectorString = `[${vector.join(",")}]`;
-
-      await client.query(
-
-      `INSERT INTO admin.documents_embeddings (id, content, embedding)
-       VALUES ($1, $2, $3)`,
-      [randomUUID(),chunk, vectorString]
-      );
+      }); 
     }
-
 
     console.log(`⬆️ Uploading ${points.length} points to Qdrant…`);
 
@@ -218,16 +162,13 @@ export async function embedDocument({ id, text, meta = {} }) {
 // SEARCH CHUNKS FROM QDRANT
 // ------------------------
 export async function queryChunks(query, topK = 5) {
-  // const vector = await embedText(query);
+  const vector = await embedText(query);
 
-  // const results = await qdrant.search(QDRANT_COLLECTION, {
-  //   vector,
-  //   limit: topK,
-  //   // score_threshold: 0.0, // filter out weak matches
-  // });
-
-  const results = await searchPgVector(query, topK);
-  // console.log(results)
+  const results = await qdrant.search(QDRANT_COLLECTION, {
+    vector,
+    limit: topK,
+    // score_threshold: 0.0, // filter out weak matches
+  }); 
   return results;
 }
 
@@ -242,7 +183,7 @@ function buildContext(matches) {
       (m, i) => `
 Chunk ${i + 1} (score: ${m.score?.toFixed(3) ?? "n/a"}):
 
-${m?.content ?? ""}
+${m?.payload?.content ?? ""}
 `
     )
     .join("\n--------------------\n");
@@ -252,16 +193,8 @@ ${m?.content ?? ""}
 // CALL GROQ LLM
 // ------------------------
 async function generateAnswer(question, context) {
-  try {
-    const model = 'llama-3.1-8b-instant';
-
-//     if (!context || !context.trim()) {
-//       // No context at all → don't even call Groq
-//       return "No matching information found.";
-//     }
-
-    const body = {
-      // model,
+  try { 
+    const body = { 
       messages: [
         {
           role: "system",
@@ -286,32 +219,7 @@ ${question}
         },
       ],
       temperature: 0.1,
-    };
-
-    // const response = await fetch(
-    //   "https://api.groq.com/openai/v1/chat/completions",
-    //   {
-    //     method: "POST",
-    //     headers: {
-    //       "Content-Type": "application/json",
-    //       Authorization: `Bearer ${GROQ_API_KEY}`,
-    //     },
-    //     body: JSON.stringify(body),
-    //   }
-    // );
-
-    // const openai = new OpenAI({
-    //   baseURL: "https://api.deepseek.com",
-    //   apiKey: "sk-8b511ee579404d59ab095b7049e41454",
-    // });
-
-    // const completion = await openai.chat.completions.create({
-    //   messages: [{ role: "system", content: body }],
-    //   model: "deepseek-chat",
-    // });
-    // console.log(completion);
-
-    console.log(body)
+    }; 
 
     const openRouter = new OpenRouter({
       apiKey:
@@ -370,25 +278,6 @@ export async function queryDocuments(query, topK = 5) {
     vector,
     limit: topK,
   });
-}
-
-async function searchPgVector(query, topK = 5) {
-  const vector = await embedText(query);
-  const vectorString = `[${vector.join(",")}]`;
-
-  const { rows } = await client.query(
-    `
-    SELECT 
-      id,
-      content,
-      (embedding <-> $1::vector) AS score
-    FROM admin.documents_embeddings
-    ORDER BY embedding <-> $1::vector
-    LIMIT $2;
-    `,
-    [vectorString, topK]
-  ); 
-  return rows;
-}
+} 
 
 
